@@ -849,7 +849,8 @@ fn import_table(doc: &mut Document, text: &str) -> Result<Report, DataError> {
         head.split('\t').map(str::to_string).zip(row.split('\t')).map(|(k, v)| (k, vec![v.to_string()])).collect()
     } else {
         // CSV with quotes: a quoted value may hold commas, doubled quotes and line breaks.
-        let mut records = vec![Vec::new()];
+        let mut records: Vec<Vec<String>> = Vec::new();
+        let mut record = Vec::new();
         let mut cur = String::new();
         let mut quoted = false;
         let mut chars = t.chars().peekable();
@@ -860,18 +861,19 @@ fn import_table(doc: &mut Document, text: &str) -> Result<Report, DataError> {
                     chars.next();
                 }
                 '"' => quoted = !quoted,
-                ',' if !quoted => records.last_mut().unwrap().push(std::mem::take(&mut cur)),
+                ',' if !quoted => record.push(std::mem::take(&mut cur)),
                 '\r' if !quoted && chars.peek() == Some(&'\n') => {}
                 '\n' if !quoted => {
-                    records.last_mut().unwrap().push(std::mem::take(&mut cur));
-                    records.push(Vec::new());
+                    record.push(std::mem::take(&mut cur));
+                    records.push(std::mem::take(&mut record));
                 }
                 c => cur.push(c),
             }
         }
-        records.last_mut().unwrap().push(cur);
+        record.push(cur);
+        records.push(record);
         // Blank lines (such as the one a trailing line break leaves) are not records.
-        let mut records = records.into_iter().filter(|r| !(r.len() == 1 && r[0].is_empty()));
+        let mut records = records.into_iter().filter(|r| !matches!(r.as_slice(), [only] if only.is_empty()));
         let (Some(head), Some(row)) = (records.next(), records.next()) else { return Err(DataError::UnknownFormat) };
         head.into_iter().zip(row).map(|(k, v)| (k, vec![v])).collect()
     };

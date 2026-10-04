@@ -163,6 +163,8 @@ fn csv_values_may_span_lines() {
     assert_eq!(values(&dst)[1].1, ["Yes"]);
     // A header without a record is still not a data file.
     assert!(import(&mut blank(), b"Name,Agree\r\n").is_err());
+    // An unterminated quote runs to the end of the file and is read leniently, as before.
+    assert!(import(&mut blank(), b"Name,Agree\r\n\"Ada, Yes\r\n").is_ok());
 }
 
 #[test]
