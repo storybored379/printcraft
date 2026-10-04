@@ -472,6 +472,23 @@ fn a_new_paragraph_colour_does_not_spill_into_the_text_after_it() {
 }
 
 #[test]
+fn a_rewritten_paragraph_keeps_its_place_in_a_shared_text_object() {
+    // Three paragraphs in one BT … ET: rewriting the second keeps the order (paragraph numbers
+    // and reading order) and every paragraph's position.
+    let src = "BT /F1 10 Tf 72 700 Td (First paragraph) Tj 0 -40 Td (Second paragraph) Tj 0 -40 Td (Third paragraph) Tj ET";
+    let mut doc = text_page(src);
+    let before = text::text_blocks(&doc, 0).unwrap();
+    text::replace_block(&mut doc, 0, 1, "Edited second").unwrap();
+    let doc = reopen(&doc);
+    let after = text::text_blocks(&doc, 0).unwrap();
+    let texts: Vec<&str> = after.iter().map(|b| b.text.as_str()).collect();
+    assert_eq!(texts, ["First paragraph", "Edited second", "Third paragraph"]);
+    assert_eq!(after[0].rect, before[0].rect);
+    assert_eq!(after[2].rect, before[2].rect);
+    assert!((after[1].rect[0] - before[1].rect[0]).abs() < 0.01 && (after[1].rect[1] - before[1].rect[1]).abs() < 0.01, "{:?}", after[1].rect);
+}
+
+#[test]
 fn justify_underline_and_spacing() {
     let src = "BT /F1 10 Tf 12 TL 100 700 Td (One two three four five six seven) Tj T* (eight nine ten eleven twelve) Tj T* (end) Tj ET";
     // Justified: every line but the last reaches the right edge.
