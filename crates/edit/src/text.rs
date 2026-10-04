@@ -745,7 +745,10 @@ pub fn rewrite_block(doc: &mut Document, page: usize, block: usize, text: Option
     let drop: std::collections::HashSet<usize> = members.iter().flat_map(|l| l.ops.iter().copied()).collect();
     // Text shown earlier in the same text object stays first: the paragraph then goes where it
     // was, between two halves of the text object, so it keeps its place in reading order.
-    let split = ops[o.bt_op..first.ops[0]]
+    let start = first.ops.first().copied().unwrap_or(o.bt_op);
+    let split = ops
+        .get(o.bt_op..start)
+        .unwrap_or_default()
         .iter()
         .enumerate()
         .any(|(i, op)| matches!(op.op.as_slice(), b"Tj" | b"TJ" | b"'" | b"\"") && !drop.contains(&(o.bt_op + i)));
@@ -757,7 +760,7 @@ pub fn rewrite_block(doc: &mut Document, page: usize, block: usize, text: Option
         block_ops.push(Op::new("BT", vec![]));
         block_ops.push(Op::new("Tm", o.tlm.iter().map(|v| n(*v)).collect()));
     }
-    let at = if split { first.ops[0] } else { o.bt_op };
+    let at = if split { start } else { o.bt_op };
     let mut new_ops = Vec::with_capacity(ops.len() + block_ops.len());
     for (i, op) in ops.into_iter().enumerate() {
         if i == at {
