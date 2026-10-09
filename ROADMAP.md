@@ -251,3 +251,5 @@ Newest first. One line per session: the date, what moved, and the new overall pe
   - Robustness sweep (963 of 983 files open, 0 crashes), text layer, find and select, tiles, web build, polish.
   - Overall ≈ 3–4%.
 - **2026-09-30 (session 1):** planning complete; viewer vertical slice.
+
+- M13: common command, batch, inspection and bounded preview tools share the existing confined automation path. MCP tools carry complete hints and reject unknown top-level keys as invalid parameters.
