@@ -337,7 +337,7 @@ impl Automation {
                     .enumerate()
                     .map(|(i, im)| {
                         let (u, v) = (info.user_to_view(im.rect[0] as f32, im.rect[1] as f32), info.user_to_view(im.rect[2] as f32, im.rect[3] as f32));
-                        json!({ "image": i + 1, "rect": [r(u[0].min(v[0])), r(u[1].min(v[1])), r(u[0].max(v[0])), r(u[1].max(v[1]))], "pixels": [im.width, im.height], "name": im.name })
+                        json!({ "image": i + 1, "rect": [r(u[0].min(v[0])), r(u[1].min(v[1])), r(u[0].max(v[0])), r(u[1].max(v[1]))], "pixels": [im.width, im.height], "name": im.name, "kind": if im.is_form { "form" } else { "image" } })
                     })
                     .collect();
                 json!({ "page": page + 1, "count": list.len(), "images": list })
@@ -1706,7 +1706,7 @@ fn info(d: &Document) -> Value {
         "links": i.links.iter().map(|l| json!({
             "page": page1(l.page), "rect": view_rect(i, l.page, l.rect),
             "target": match &l.target {
-                pdfcraft_render::LinkTarget::Page(p) => json!({ "page": page1(*p) }),
+                pdfcraft_render::LinkTarget::Page(p, _) => json!({ "page": page1(*p) }),
                 pdfcraft_render::LinkTarget::Uri(u) => json!({ "uri": u }),
                 pdfcraft_render::LinkTarget::SetLayers { changes, preserve_rb } => json!({
                     "layers": changes.iter().map(|(op, ocg)| json!({
