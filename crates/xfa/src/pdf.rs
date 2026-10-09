@@ -32,13 +32,25 @@ fn jpeg_frame(data: &[u8]) -> Option<(u32, u32, u8)> {
     jpeg_info(data).map(|(w, h, c, _)| (w, h, c))
 }
 
-/// A hash of a picture's bytes, to find its XObject again.
-fn content_hash(data: &[u8]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    data.len().hash(&mut h);
-    data.hash(&mut h);
-    h.finish()
+/// The SHA-256 of a picture's bytes, to find its XObject again.
+fn content_hash(data: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(data).into()
+}
+
+fn hex32(h: &[u8; 32]) -> Vec<u8> {
+    h.iter().flat_map(|b| format!("{b:02x}").into_bytes()).collect()
+}
+
+fn parse_hex32(s: &[u8]) -> Option<[u8; 32]> {
+    let mut out = [0u8; 32];
+    if s.len() != 64 {
+        return None;
+    }
+    for (o, pair) in out.iter_mut().zip(s.as_chunks::<2>().0) {
+        *o = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// Width, height, components and whether an Adobe APP14 segment is present (such CMYK JPEGs
@@ -144,17 +156,20 @@ pub struct Written {
     pub warnings: Vec<String>,
 }
 
-/// The catalog's record of the image XObjects written for pictures, by content hash, so a
-/// re-layout (after every script event) reuses them instead of decoding and embedding the
-/// same picture again.
-const IMAGES_KEY: &[u8] = b"PCXfaImages";
+/// On an image XObject written for a picture: the SHA-256 (hex) of the picture's bytes. A
+/// re-layout (after every script event) finds the XObjects on the pages it replaces by this,
+/// and reuses them instead of decoding and embedding the same picture again. Nothing is kept
+/// in the catalog, and a match is by the picture's own hash, never by a map read from the file.
+const IMAGE_SHA_KEY: &[u8] = b"PCXfaSHA256";
+/// Most pages searched for earlier pictures.
+const MAX_PAGES_SEARCHED: usize = 10_000;
 /// Most pictures remembered.
 const MAX_REMEMBERED_IMAGES: usize = 1000;
 
 struct Emitter<'a> {
     doc: &'a mut Document,
     /// Image XObjects by content hash: those from earlier passes, then this one's.
-    images: HashMap<u64, ObjRef>,
+    images: HashMap<[u8; 32], ObjRef>,
     fields: Vec<ObjRef>,
     radio_groups: HashMap<String, (ObjRef, Vec<ObjRef>)>,
     /// The on state selected in each radio group, from the data.
@@ -408,16 +423,17 @@ impl Emitter<'_> {
         {
             return Some(r);
         }
-        let r = self.new_image_xobject(data, content_type)?;
+        let r = self.new_image_xobject(data, content_type, &hash)?;
         if self.images.len() < MAX_REMEMBERED_IMAGES {
             self.images.insert(hash, r);
         }
         Some(r)
     }
 
-    fn new_image_xobject(&mut self, data: &[u8], content_type: &str) -> Option<ObjRef> {
+    fn new_image_xobject(&mut self, data: &[u8], content_type: &str, hash: &[u8; 32]) -> Option<ObjRef> {
         let what = if content_type.is_empty() { "picture" } else { content_type };
         let mut d = Dict::new();
+        d.set(IMAGE_SHA_KEY.to_vec(), Object::String(PdfString::literal(hex32(hash))));
         d.set(b"Type".to_vec(), Object::name("XObject"));
         d.set(b"Subtype".to_vec(), Object::name("Image"));
         d.set(b"BitsPerComponent".to_vec(), Object::Int(8));
@@ -553,6 +569,30 @@ impl Emitter<'_> {
 
 /// Replace the document's pages with the laid-out form and add its fields to the AcroForm. The
 /// XFA packets and everything else in the catalog stay.
+/// The image XObjects earlier passes wrote for pictures, by the SHA-256 each records: those on
+/// the pages under `pages` (the flat page list [`write_form`] writes).
+fn earlier_images(doc: &Document, pages: ObjRef) -> HashMap<[u8; 32], ObjRef> {
+    let mut out = HashMap::new();
+    let kids = doc.get(pages).as_dict().and_then(|d| d.get(b"Kids").map(|k| doc.resolve(k))).and_then(|k| k.as_array().cloned()).unwrap_or_default();
+    for page in kids.iter().filter_map(Object::as_ref).take(MAX_PAGES_SEARCHED) {
+        let page = doc.get(page);
+        let Some(resources) = page.as_dict().and_then(|p| p.get(b"Resources")).map(|r| doc.resolve(r)) else { continue };
+        let Some(xobjects) = resources.as_dict().and_then(|r| r.get(b"XObject")).map(|x| doc.resolve(x)) else { continue };
+        for r in xobjects.as_dict().into_iter().flat_map(|x| x.iter()).filter_map(|(_, v)| v.as_ref()) {
+            if out.len() >= MAX_REMEMBERED_IMAGES {
+                return out;
+            }
+            if let Object::Stream(s) = &*doc.get(r)
+                && s.dict.name(b"Subtype") == Some(b"Image")
+                && let Some(hash) = s.dict.get(IMAGE_SHA_KEY).and_then(Object::as_string).and_then(|h| parse_hex32(&h.bytes))
+            {
+                out.insert(hash, r);
+            }
+        }
+    }
+    out
+}
+
 pub fn write_form(doc: &mut Document, form: &Form) -> Result<Written, XfaError> {
     let catalog_ref = doc.root().ok_or_else(|| XfaError::Malformed("the document has no catalog".into()))?;
     let mut catalog = doc.get(catalog_ref).as_dict().cloned().ok_or_else(|| XfaError::Malformed("the catalog is not a dictionary".into()))?;
@@ -568,18 +608,8 @@ pub fn write_form(doc: &mut Document, form: &Form) -> Result<Written, XfaError> 
             r
         }
     };
-    // Pictures embedded by earlier passes, by content hash.
-    let images: HashMap<u64, ObjRef> = catalog
-        .get(IMAGES_KEY)
-        .map(|o| doc.resolve(o))
-        .and_then(|o| o.as_dict().cloned())
-        .map(|d| {
-            d.iter()
-                .filter_map(|(k, v)| Some((u64::from_str_radix(std::str::from_utf8(k).ok()?, 16).ok()?, v.as_ref()?)))
-                .take(MAX_REMEMBERED_IMAGES)
-                .collect()
-        })
-        .unwrap_or_default();
+    // Pictures embedded by earlier passes, from the pages this pass replaces.
+    let images = earlier_images(doc, pages_ref);
     let mut em = Emitter {
         doc,
         images,
@@ -603,15 +633,7 @@ pub fn write_form(doc: &mut Document, form: &Form) -> Result<Written, XfaError> 
             }
         })?;
     }
-    let Emitter { doc, fields, field_count, warnings, images, .. } = em;
-    if !images.is_empty() {
-        let mut d = Dict::new();
-        for (hash, r) in &images {
-            d.set(format!("{hash:016x}").into_bytes(), Object::Ref(*r));
-        }
-        catalog.set(IMAGES_KEY.to_vec(), Object::Dict(d));
-        catalog_changed = true;
-    }
+    let Emitter { doc, fields, field_count, warnings, .. } = em;
     let count = kids.len();
     doc.update_dict(pages_ref, |d| {
         d.set(b"Type".to_vec(), Object::name("Pages"));

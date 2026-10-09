@@ -990,8 +990,9 @@ fn pictures_are_embedded_once_across_relayouts_and_bad_data_pictures_are_reporte
         )
         .count();
     assert_eq!(images, 3, "the PNG, its soft mask and the GIF, however many times the form was laid out");
+    // No private map in the catalog: earlier pictures are found on the pages, by their hash.
     let root = doc.get(doc.root().unwrap());
-    assert!(root.as_dict().unwrap().contains(b"PCXfaImages"));
+    assert!(!root.as_dict().unwrap().contains(b"PCXfaImages"));
     // Pictures in the data that aren't pictures: a warning naming the field, the template's
     // picture shown instead.
     for (data, what) in [("Qk0AAAAA", "not a JPEG, PNG or GIF"), ("not base64!", "not base64")] {

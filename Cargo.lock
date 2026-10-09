@@ -3849,6 +3849,7 @@ dependencies = [
  "pdfcraft-fonts",
  "png 0.18.1",
  "roxmltree",
+ "sha2",
  "thiserror 2.0.21",
 ]
 
