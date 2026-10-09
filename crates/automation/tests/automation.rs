@@ -3276,7 +3276,7 @@ fn conventions_annotations_and_strict_keys_in_both_modes() {
 
 #[cfg(feature = "mcp")]
 #[test]
-fn conventions_resources_and_modern_results() {
+fn conventions_resources() {
     let dir = workdir("conventions-resources");
     let mut s = McpServer::new(auto(&dir));
     let read = |s: &mut McpServer, uri: &str| {
@@ -3289,31 +3289,23 @@ fn conventions_resources_and_modern_results() {
     assert_eq!(read(&mut s, "pdfcraft://document"), doc["result"]["structuredContent"]);
     let commands = rpc(&mut s, 4, "tools/call", json!({"name":"command_list","arguments":{}}));
     assert_eq!(read(&mut s, "pdfcraft://commands"), commands["result"]["structuredContent"]);
-    for (method, params) in [
-        ("tools/list", json!({})),
-        ("resources/list", json!({})),
-        ("resources/templates/list", json!({})),
-        ("resources/read", json!({"uri":"pdfcraft://document"})),
-    ] {
-        let legacy = rpc(&mut s, 5, method, params.clone());
-        assert!(legacy["result"].get("resultType").is_none());
-        let mut modern = params;
-        modern["_meta"] = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28"});
-        let r = rpc(&mut s, 6, method, modern);
-        assert_eq!(r["result"]["resultType"], "complete");
-        assert_eq!(r["result"]["cacheScope"], "private");
-        assert_eq!(r["result"]["ttlMs"], if method == "resources/read" || method == "resources/list" { 0 } else { 600_000 });
-        let mut stripped = r["result"].clone();
-        for k in ["resultType", "ttlMs", "cacheScope"] {
-            stripped.as_object_mut().unwrap().remove(k);
-        }
-        assert_eq!(stripped, legacy["result"]);
+    // Responses keep the shape every supported protocol revision expects: no cache hints.
+    for (method, params) in [("tools/list", json!({})), ("resources/list", json!({})), ("resources/read", json!({"uri":"pdfcraft://document"}))] {
+        assert!(rpc(&mut s, 5, method, params)["result"].get("resultType").is_none());
     }
-    assert_eq!(rpc(&mut s, 7, "initialize", json!({"protocolVersion":"2026-07-28"}))["result"]["protocolVersion"], "2026-07-28");
-    assert_eq!(rpc(&mut s, 8, "tools/list", json!({}))["result"]["resultType"], "complete");
+    assert_eq!(rpc(&mut s, 7, "initialize", json!({"protocolVersion":"2026-07-28"}))["result"]["protocolVersion"], "2025-06-18");
     assert!(s.handle_line(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":999}}"#).is_none());
     assert_eq!(
         rpc(&mut s, 9, "tools/call", json!({"name":"doc_inspect","arguments":{},"_meta":{"progressToken":"quick"}}))["result"]["isError"],
         false
     );
+}
+
+#[test]
+fn command_batch_refuses_more_than_a_thousand_steps() {
+    let dir = workdir("batch-cap");
+    let mut a = auto(&dir);
+    let steps: Vec<Value> = (0..1001).map(|_| json!({"id":"no.such.command"})).collect();
+    let err = a.call("command_batch", &json!({"steps": steps})).unwrap_err();
+    assert!(err.to_string().contains("at most 1000 steps"), "{err}");
 }

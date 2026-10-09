@@ -40,7 +40,6 @@ arguments), including an empty `documents` array before any PDF is opened. `pdfc
 returns the command catalog (as `command_list`). Existing per-document info, text and page-image
 resources and their templates are preserved.
 
-MCP 2026-07-28 clients, negotiated through `initialize` or a request's `_meta`, receive
-`resultType: "complete"`, `ttlMs`, and `cacheScope: "private"` on lists and reads. Resource reads
-and the changing list of open-document resources have zero TTL; tool and template catalogs use
-ten minutes. Older clients keep their previous response shape.
+Unknown top-level argument keys are refused with JSON-RPC `-32602` (invalid params) instead of
+being ignored, so a misspelled argument is reported rather than silently dropped. Clients that
+sent extra keys before get an error now.

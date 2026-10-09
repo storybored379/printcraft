@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use crate::{Automation, Content, ToolError};
 
 /// Protocol revisions we speak, newest first.
-pub const PROTOCOL_VERSIONS: &[&str] = &["2026-07-28", "2025-06-18", "2025-03-26", "2024-11-05"];
+pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -63,12 +63,11 @@ const TOOL_CALL: &str = "tool_call";
 pub struct McpServer {
     automation: Automation,
     compact: bool,
-    modern: bool,
 }
 
 impl McpServer {
     pub fn new(automation: Automation) -> Self {
-        Self { automation, compact: false, modern: false }
+        Self { automation, compact: false }
     }
 
     /// In compact mode `tools/list` returns only [`COMPACT_CORE_TOOLS`] plus `tool_search` and
@@ -119,22 +118,7 @@ impl McpServer {
         let id = id?; // notifications/initialized, notifications/cancelled, …: nothing to answer
         let result = if method == "tools/call" { guarded_tool(|| self.dispatch(method, &params)) } else { self.dispatch(method, &params) };
         Some(match result {
-            Ok(mut result) => {
-                let modern = params
-                    .get("_meta")
-                    .and_then(|m| m.get("io.modelcontextprotocol/protocolVersion"))
-                    .and_then(Value::as_str)
-                    .map_or(self.modern, |v| v == "2026-07-28");
-                if modern
-                    && matches!(method, "tools/list" | "resources/list" | "resources/templates/list" | "resources/read")
-                    && let Some(object) = result.as_object_mut()
-                {
-                    object.insert("resultType".into(), json!("complete"));
-                    object.insert("ttlMs".into(), json!(if matches!(method, "resources/read" | "resources/list") { 0 } else { 600_000 }));
-                    object.insert("cacheScope".into(), json!("private"));
-                }
-                json!({ "jsonrpc": "2.0", "id": id, "result": result })
-            }
+            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
             Err((code, message)) => error(id, code, &message),
         })
     }
@@ -143,8 +127,7 @@ impl McpServer {
         match method {
             "initialize" => {
                 let asked = params.get("protocolVersion").and_then(Value::as_str);
-                let version = asked.filter(|v| PROTOCOL_VERSIONS.contains(v)).unwrap_or("2025-06-18");
-                self.modern = version == "2026-07-28";
+                let version = asked.filter(|v| PROTOCOL_VERSIONS.contains(v)).unwrap_or(PROTOCOL_VERSIONS[0]);
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false, "subscribe": false } },

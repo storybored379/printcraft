@@ -4,6 +4,9 @@ use serde_json::{Value, json};
 use crate::{Args, Automation, Content, Result, ToolError, encode_png, failed, info, tools};
 use pdfcraft_render::{RenderRequest, RequestKind};
 
+/// The most steps one `command_batch` runs.
+pub(crate) const MAX_BATCH_STEPS: usize = 1000;
+
 impl Automation {
     pub(crate) fn command_run(&mut self, args: &Args) -> Result<Vec<Content>> {
         let id = args.str("id")?;
@@ -47,6 +50,9 @@ impl Automation {
 
     pub(crate) fn command_batch(&mut self, args: &Args) -> Result<Value> {
         let steps = args.get("steps").and_then(Value::as_array).ok_or_else(|| ToolError::InvalidArgs("steps must be an array".into()))?;
+        if steps.len() > MAX_BATCH_STEPS {
+            return Err(ToolError::InvalidArgs(format!("a batch has at most {MAX_BATCH_STEPS} steps ({} given); split it", steps.len())));
+        }
         // Check every envelope before applying any edit.
         for step in steps {
             let a = Args(step);
