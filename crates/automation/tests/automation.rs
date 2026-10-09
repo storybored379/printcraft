@@ -570,11 +570,11 @@ fn mcp_resources_expose_open_documents() {
     let dir = workdir("mcp-resources");
     let mut s = McpServer::new(auto(&dir));
     assert!(rpc(&mut s, 1, "initialize", json!({}))["result"]["capabilities"]["resources"].is_object());
-    assert_eq!(rpc(&mut s, 2, "resources/list", json!({}))["result"]["resources"], json!([]));
+    assert_eq!(rpc(&mut s, 2, "resources/list", json!({}))["result"]["resources"].as_array().unwrap().len(), 2);
     assert_eq!(rpc(&mut s, 3, "resources/templates/list", json!({}))["result"]["resourceTemplates"].as_array().unwrap().len(), 4);
     rpc(&mut s, 4, "tools/call", json!({ "name": "doc_open", "arguments": { "path": "a.pdf" } }));
     let list = rpc(&mut s, 5, "resources/list", json!({}))["result"]["resources"].as_array().cloned().unwrap();
-    assert_eq!(list.len(), 2 + 3, "info, text and three page images");
+    assert_eq!(list.len(), 2 + 3 + 2, "info, text, three page images and two session resources");
     assert_eq!(list[0]["uri"], "pdfcraft://doc/1/info");
     let read = |s: &mut McpServer, uri: &str| rpc(s, 6, "resources/read", json!({ "uri": uri }))["result"]["contents"][0].clone();
     let text = read(&mut s, "pdfcraft://doc/1/text");
@@ -2985,4 +2985,48 @@ fn conventions_annotations_and_strict_keys_in_both_modes() {
             assert!(message.contains("bogus_arg") && message.contains("expected:"));
         }
     }
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn conventions_resources_and_modern_results() {
+    let dir = workdir("conventions-resources");
+    let mut s = McpServer::new(auto(&dir));
+    let read = |s: &mut McpServer, uri: &str| {
+        let r = rpc(s, 1, "resources/read", json!({"uri":uri}));
+        serde_json::from_str::<Value>(r["result"]["contents"][0]["text"].as_str().expect("JSON resource")).unwrap()
+    };
+    assert_eq!(read(&mut s, "pdfcraft://document"), json!({"documents":[]}));
+    rpc(&mut s, 2, "tools/call", json!({"name":"doc_open","arguments":{"path":"a.pdf"}}));
+    let doc = rpc(&mut s, 3, "tools/call", json!({"name":"doc_inspect","arguments":{}}));
+    assert_eq!(read(&mut s, "pdfcraft://document"), doc["result"]["structuredContent"]);
+    let commands = rpc(&mut s, 4, "tools/call", json!({"name":"command_list","arguments":{}}));
+    assert_eq!(read(&mut s, "pdfcraft://commands"), commands["result"]["structuredContent"]);
+    for (method, params) in [
+        ("tools/list", json!({})),
+        ("resources/list", json!({})),
+        ("resources/templates/list", json!({})),
+        ("resources/read", json!({"uri":"pdfcraft://document"})),
+    ] {
+        let legacy = rpc(&mut s, 5, method, params.clone());
+        assert!(legacy["result"].get("resultType").is_none());
+        let mut modern = params;
+        modern["_meta"] = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28"});
+        let r = rpc(&mut s, 6, method, modern);
+        assert_eq!(r["result"]["resultType"], "complete");
+        assert_eq!(r["result"]["cacheScope"], "private");
+        assert_eq!(r["result"]["ttlMs"], if method == "resources/read" || method == "resources/list" { 0 } else { 600_000 });
+        let mut stripped = r["result"].clone();
+        for k in ["resultType", "ttlMs", "cacheScope"] {
+            stripped.as_object_mut().unwrap().remove(k);
+        }
+        assert_eq!(stripped, legacy["result"]);
+    }
+    assert_eq!(rpc(&mut s, 7, "initialize", json!({"protocolVersion":"2026-07-28"}))["result"]["protocolVersion"], "2026-07-28");
+    assert_eq!(rpc(&mut s, 8, "tools/list", json!({}))["result"]["resultType"], "complete");
+    assert!(s.handle_line(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":999}}"#).is_none());
+    assert_eq!(
+        rpc(&mut s, 9, "tools/call", json!({"name":"doc_inspect","arguments":{},"_meta":{"progressToken":"quick"}}))["result"]["isError"],
+        false
+    );
 }

@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use crate::{Automation, Content, ToolError};
 
 /// Protocol revisions we speak, newest first.
-pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+pub const PROTOCOL_VERSIONS: &[&str] = &["2026-07-28", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -63,11 +63,12 @@ const TOOL_CALL: &str = "tool_call";
 pub struct McpServer {
     automation: Automation,
     compact: bool,
+    modern: bool,
 }
 
 impl McpServer {
     pub fn new(automation: Automation) -> Self {
-        Self { automation, compact: false }
+        Self { automation, compact: false, modern: false }
     }
 
     /// In compact mode `tools/list` returns only [`COMPACT_CORE_TOOLS`] plus `tool_search` and
@@ -118,7 +119,22 @@ impl McpServer {
         let id = id?; // notifications/initialized, notifications/cancelled, …: nothing to answer
         let result = if method == "tools/call" { guarded_tool(|| self.dispatch(method, &params)) } else { self.dispatch(method, &params) };
         Some(match result {
-            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Ok(mut result) => {
+                let modern = params
+                    .get("_meta")
+                    .and_then(|m| m.get("io.modelcontextprotocol/protocolVersion"))
+                    .and_then(Value::as_str)
+                    .map_or(self.modern, |v| v == "2026-07-28");
+                if modern
+                    && matches!(method, "tools/list" | "resources/list" | "resources/templates/list" | "resources/read")
+                    && let Some(object) = result.as_object_mut()
+                {
+                    object.insert("resultType".into(), json!("complete"));
+                    object.insert("ttlMs".into(), json!(if matches!(method, "resources/read" | "resources/list") { 0 } else { 600_000 }));
+                    object.insert("cacheScope".into(), json!("private"));
+                }
+                json!({ "jsonrpc": "2.0", "id": id, "result": result })
+            }
             Err((code, message)) => error(id, code, &message),
         })
     }
@@ -127,7 +143,8 @@ impl McpServer {
         match method {
             "initialize" => {
                 let asked = params.get("protocolVersion").and_then(Value::as_str);
-                let version = asked.filter(|v| PROTOCOL_VERSIONS.contains(v)).unwrap_or(PROTOCOL_VERSIONS[0]);
+                let version = asked.filter(|v| PROTOCOL_VERSIONS.contains(v)).unwrap_or("2025-06-18");
+                self.modern = version == "2026-07-28";
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false, "subscribe": false } },
@@ -404,10 +421,29 @@ impl McpServer {
                 }
             }
         }
+        out.extend([
+            json!({"uri":"pdfcraft://document","name":"Open documents","mimeType":"application/json","description":"Session document state, as doc_inspect without arguments."}),
+            json!({"uri":"pdfcraft://commands","name":"Command catalog","mimeType":"application/json","description":"Commands and mapped tool schemas, as command_list without arguments."}),
+        ]);
         out
     }
 
     fn read_resource(&mut self, uri: &str) -> Result<Value, (i64, String)> {
+        if let Some(tool) = match uri {
+            "pdfcraft://document" => Some("doc_inspect"),
+            "pdfcraft://commands" => Some("command_list"),
+            _ => None,
+        } {
+            let content = self.automation.call(tool, &json!({})).map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+            let value = content
+                .into_iter()
+                .find_map(|c| match c {
+                    Content::Json(v) => Some(v),
+                    _ => None,
+                })
+                .ok_or((INVALID_PARAMS, "resource returned no JSON".into()))?;
+            return Ok(json!({"uri":uri,"mimeType":"application/json","text":value.to_string()}));
+        }
         let r = parse_uri(uri).ok_or((INVALID_PARAMS, format!("unknown resource {uri:?}")))?;
         let call = |a: &mut Automation, tool: &str, args: Value| a.call(tool, &args).map_err(|e| (INVALID_PARAMS, e.to_string()));
         let json_of = |c: Vec<Content>| c.into_iter().find_map(|c| if let Content::Json(v) = c { Some(v) } else { None }).unwrap_or(Value::Null);

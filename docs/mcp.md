@@ -32,3 +32,15 @@ serving. A failed batch includes per-step errors and is marked `isError: true`.
 
 Exports complete synchronously. A call's `progressToken` and cancellation notifications are
 harmlessly ignored; the server does not provide background export progress or cancellation.
+
+## Resources and protocol versions
+
+`pdfcraft://document` returns the session's document information (as `doc_inspect` without
+arguments), including an empty `documents` array before any PDF is opened. `pdfcraft://commands`
+returns the command catalog (as `command_list`). Existing per-document info, text and page-image
+resources and their templates are preserved.
+
+MCP 2026-07-28 clients, negotiated through `initialize` or a request's `_meta`, receive
+`resultType: "complete"`, `ttlMs`, and `cacheScope: "private"` on lists and reads. Resource reads
+and the changing list of open-document resources have zero TTL; tool and template catalogs use
+ten minutes. Older clients keep their previous response shape.
